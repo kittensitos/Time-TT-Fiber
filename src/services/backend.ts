@@ -16,6 +16,8 @@ export interface Backend {
   joinTeam(name: string, user: AuthUser): Promise<Team>
   /** Removes the person and cascades their requests and tasks. */
   leaveTeam(person: Person): Promise<void>
+  /** Deletes the team and cascades all members, their requests and tasks. */
+  deleteTeam(teamId: string): Promise<void>
 
   // --- people ---
   getPersonByEmail(email: string): Promise<Person | null>
@@ -26,12 +28,16 @@ export interface Backend {
 
   // --- time-off requests ---
   getRequestsForPeople(personIds: string[]): Promise<TimeOffRequest[]>
+  /** Live-updates with the requests for the given people; returns unsubscribe. */
+  subscribeRequestsForPeople(personIds: string[], cb: (requests: TimeOffRequest[]) => void): () => void
   addRequest(data: NewRequest): Promise<TimeOffRequest>
   updateRequest(id: string, data: Partial<TimeOffRequest>): Promise<void>
   deleteRequest(id: string): Promise<void>
 
   // --- tasks ---
   getTasksForPeople(personIds: string[]): Promise<Task[]>
+  /** Live-updates with the tasks for the given people; returns unsubscribe. */
+  subscribeTasksForPeople(personIds: string[], cb: (tasks: Task[]) => void): () => void
   addTask(data: NewTask): Promise<Task>
   updateTask(id: string, data: Partial<Task>): Promise<void>
   updateTaskStatus(id: string, status: TaskStatus): Promise<void>

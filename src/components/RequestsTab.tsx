@@ -7,7 +7,7 @@ import type { RequestStatus, RequestType, TimeOffRequest } from '../types'
 import Modal from './Modal'
 
 export default function RequestsTab() {
-  const { person, isAdmin, people, requests, refresh, personName } = useApp()
+  const { person, isAdmin, people, requests, personName } = useApp()
 
   // submit form
   const [type, setType] = useState<RequestType>('powerhour')
@@ -55,7 +55,6 @@ export default function RequestsTab() {
       return
     }
     setHours(''); setStartDate(''); setEndDate(''); setNote('')
-    await refresh()
   }
 
   async function setStatus(id: string, status: RequestStatus) {
@@ -63,9 +62,7 @@ export default function RequestsTab() {
       await backend.updateRequest(id, { status })
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Could not update the request.')
-      return
     }
-    await refresh()
   }
 
   async function remove(id: string) {
@@ -74,9 +71,7 @@ export default function RequestsTab() {
       await backend.deleteRequest(id)
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Could not delete the request.')
-      return
     }
-    await refresh()
   }
 
   const filtered = requests.filter(
@@ -201,7 +196,7 @@ export default function RequestsTab() {
 }
 
 function EditRequestModal({ request, onClose }: { request: TimeOffRequest; onClose: () => void }) {
-  const { refresh, personName } = useApp()
+  const { personName } = useApp()
   const [type, setType] = useState<RequestType>(request.type)
   const [hours, setHours] = useState(String(request.hours || ''))
   const [startDate, setStartDate] = useState(request.startDate)
@@ -229,7 +224,6 @@ function EditRequestModal({ request, onClose }: { request: TimeOffRequest; onClo
       setError(err instanceof Error ? err.message : 'Could not save the request.')
       return
     }
-    await refresh()
     onClose()
   }
 

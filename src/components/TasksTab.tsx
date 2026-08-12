@@ -10,7 +10,7 @@ const STATUS_ORDER: Record<TaskStatus, number> = { assigned: 0, in_progress: 1, 
 const PRIO_ORDER: Record<Priority, number> = { high: 0, medium: 1, low: 2 }
 
 export default function TasksTab() {
-  const { person, isAdmin, people, tasks, refresh, personName } = useApp()
+  const { person, isAdmin, people, tasks, personName } = useApp()
 
   // create form (admin)
   const [title, setTitle] = useState('')
@@ -43,7 +43,6 @@ export default function TasksTab() {
       return
     }
     setTitle(''); setDescription(''); setAssigneeId(''); setPriority('medium'); setDueDate('')
-    await refresh()
   }
 
   async function changeStatus(task: Task, status: TaskStatus) {
@@ -51,9 +50,7 @@ export default function TasksTab() {
       await backend.updateTaskStatus(task.id, status)
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Could not update the task.')
-      return
     }
-    await refresh()
   }
 
   async function remove(id: string) {
@@ -62,9 +59,7 @@ export default function TasksTab() {
       await backend.deleteTask(id)
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Could not delete the task.')
-      return
     }
-    await refresh()
   }
 
   const filtered = tasks
@@ -197,7 +192,7 @@ export default function TasksTab() {
 }
 
 function EditTaskModal({ task, onClose }: { task: Task; onClose: () => void }) {
-  const { people, refresh } = useApp()
+  const { people } = useApp()
   const [title, setTitle] = useState(task.title)
   const [description, setDescription] = useState(task.description)
   const [assigneeId, setAssigneeId] = useState(task.assigneeId)
@@ -215,7 +210,6 @@ function EditTaskModal({ task, onClose }: { task: Task; onClose: () => void }) {
       setError(err instanceof Error ? err.message : 'Could not save the task.')
       return
     }
-    await refresh()
     onClose()
   }
 

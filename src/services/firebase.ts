@@ -15,6 +15,7 @@ import {
   getDocs,
   getFirestore,
   limit,
+  onSnapshot,
   query,
   updateDoc,
   where,
@@ -64,6 +65,28 @@ export function createFirebaseBackend(): Backend {
       snap.forEach((d) => results.push({ id: d.id, ...d.data() } as T))
     }
     return results
+  }
+
+  function subscribeDocs<T>(
+    col: string,
+    personKey: string,
+    personIds: string[],
+    cb: (items: T[]) => void,
+  ): () => void {
+    if (personIds.length === 0) {
+      cb([])
+      return () => {}
+    }
+    const chunks = chunk(personIds, IN_CHUNK)
+    const byChunk = new Map<number, T[]>()
+    const unsubs = chunks.map((ids, i) =>
+      onSnapshot(query(collection(db, col), where(personKey, 'in', ids)), (snap) => {
+        byChunk.set(i, snap.docs.map((d) => ({ id: d.id, ...d.data() }) as T))
+        // Emit only once every chunk has reported, so callers never see a partial list.
+        if (byChunk.size === chunks.length) cb([...byChunk.values()].flat())
+      }),
+    )
+    return () => unsubs.forEach((u) => u())
   }
 
   async function deletePersonCascade(personId: string): Promise<void> {
@@ -130,6 +153,12 @@ export function createFirebaseBackend(): Backend {
       await deletePersonCascade(person.id)
     },
 
+    async deleteTeam(teamId) {
+      const members = await backend.getPeople(teamId)
+      for (const member of members) await deletePersonCascade(member.id)
+      await deleteDoc(doc(db, TEAMS, teamId))
+    },
+
     async getPersonByEmail(email) {
       const snap = await getDocs(
         query(collection(db, PEOPLE), where('email', '==', email.toLowerCase()), limit(1)),
@@ -157,6 +186,10 @@ export function createFirebaseBackend(): Backend {
       return queryDocs<TimeOffRequest>(REQUESTS, 'personId', personIds)
     },
 
+    subscribeRequestsForPeople(personIds, cb) {
+      return subscribeDocs<TimeOffRequest>(REQUESTS, 'personId', personIds, cb)
+    },
+
     async addRequest(data: NewRequest) {
       const docData = { ...data, status: 'pending' as const, createdAt: Date.now() }
       const ref = await addDoc(collection(db, REQUESTS), docData)
@@ -174,6 +207,10 @@ export function createFirebaseBackend(): Backend {
 
     getTasksForPeople(personIds) {
       return queryDocs<Task>(TASKS, 'assigneeId', personIds)
+    },
+
+    subscribeTasksForPeople(personIds, cb) {
+      return subscribeDocs<Task>(TASKS, 'assigneeId', personIds, cb)
     },
 
     async addTask(data: NewTask) {

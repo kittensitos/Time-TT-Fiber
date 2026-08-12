@@ -5,6 +5,9 @@ rules_version = '2';
 // - Team admins (team.adminEmail) and allowlisted team leads (SHA-256 hashes,
 //   no plaintext emails in this file) manage people, tasks and request status.
 // - Members create their own requests and update the status of tasks assigned to them.
+// - Every write is schema-checked: unknown fields, out-of-range values and
+//   tampering with immutable fields (personId, email, adminEmail, createdAt)
+//   are rejected.
 // Review and tighten before production use.
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -28,7 +31,10 @@ service cloud.firestore {
     // of sign-in provider (email/password or Google SSO).
     function isTeamLead() {
       return allowedUser() && hashing.sha256(myEmail()).toHexString().lower() in [
-        'b17287bddc5630440d88617549fd75b9204cd66083a5c83bce6048aa49ec47c3'
+        'b17287bddc5630440d88617549fd75b9204cd66083a5c83bce6048aa49ec47c3',
+        'd9830649c2c00b8a330013e49de0f3e2534d7d691a0b7d19e5a098e3c61fb6b7',
+        'f1cb7a213de4dce04f4fb6656ebb918e53be52e2f86807f302704d18af065cd0',
+        '606030578654a5915087caabeb573f8cb69adb2f91d1409c75dd6bd8905077d8'
       ];
     }
 
@@ -51,13 +57,54 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/people/$(personId)).data.email.lower() == myEmail();
     }
 
+    function validDateStr(s) {
+      return s is string && s.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
+    }
+
+    function validTeamName(name) {
+      return name is string && name.size() > 0 && name.size() <= 100;
+    }
+
+    // Full post-write shape of a request document.
+    function validRequestData() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['personId', 'type', 'startDate', 'endDate', 'note', 'hours', 'status', 'createdAt'])
+        && d.type in ['powerhour', 'other']
+        && d.status in ['pending', 'approved', 'denied']
+        && validDateStr(d.startDate)
+        && validDateStr(d.endDate)
+        && d.endDate >= d.startDate
+        && d.hours is int && d.hours >= 0 && d.hours <= 24
+        && d.note is string && d.note.size() <= 1000
+        && (!('createdAt' in d.keys()) || d.createdAt is number);
+    }
+
+    // Full post-write shape of a task document.
+    function validTaskData() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['title', 'description', 'assigneeId', 'priority', 'status', 'dueDate'])
+        && d.title is string && d.title.size() > 0 && d.title.size() <= 200
+        && d.description is string && d.description.size() <= 2000
+        && d.priority in ['low', 'medium', 'high']
+        && d.status in ['assigned', 'in_progress', 'completed']
+        && d.dueDate is string
+        && (d.dueDate == '' || validDateStr(d.dueDate));
+    }
+
     match /teams/{teamId} {
       allow read: if allowedUser();
       // Creator becomes the team admin; restricted to allowlisted team leads.
       allow create: if allowedUser()
+        && request.resource.data.keys().hasOnly(['name', 'adminEmail'])
+        && validTeamName(request.resource.data.name)
         && request.resource.data.adminEmail.lower() == myEmail()
         && isTeamLead();
-      allow update, delete: if allowedUser()
+      // Renames only — adminEmail is immutable so ownership can't be hijacked.
+      allow update: if allowedUser()
+        && (resource.data.adminEmail.lower() == myEmail() || isTeamLead())
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name'])
+        && validTeamName(request.resource.data.name);
+      allow delete: if allowedUser()
         && (resource.data.adminEmail.lower() == myEmail() || isTeamLead());
     }
 
@@ -66,11 +113,24 @@ service cloud.firestore {
       // Self-registration on team create/join, the team admin, or a lead —
       // and the new member must belong to an allowed domain.
       allow create: if allowedUser()
+        && request.resource.data.keys().hasOnly(['name', 'email', 'teamId'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 120
+        && request.resource.data.teamId is string
+        && request.resource.data.email is string
+        && request.resource.data.email.size() <= 254
         && request.resource.data.email.lower().matches('.*@(telusinternational[.]com|telusdigital[.]com)$')
         && (request.resource.data.email.lower() == myEmail()
             || teamAdminEmail(request.resource.data.teamId) == myEmail()
             || isTeamLead());
-      allow update, delete: if allowedUser()
+      // Email is immutable: only name and team membership may change.
+      allow update: if allowedUser()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'teamId'])
+        && (resource.data.email.lower() == myEmail()
+            || teamAdminEmail(resource.data.teamId) == myEmail()
+            || isTeamLead());
+      allow delete: if allowedUser()
         && (resource.data.email.lower() == myEmail()
             || teamAdminEmail(resource.data.teamId) == myEmail()
             || isTeamLead());
@@ -81,14 +141,18 @@ service cloud.firestore {
       // Members file requests for themselves; new requests are always pending.
       allow create: if allowedUser()
         && isPerson(request.resource.data.personId)
-        && request.resource.data.status == 'pending';
-      // Admins/leads approve, deny or edit anything. Members may edit their own
-      // request only while it stays pending — no self-approval, no reassigning.
-      allow update: if isAdminOfPerson(resource.data.personId)
-        || (isPerson(resource.data.personId)
-            && resource.data.status == 'pending'
-            && request.resource.data.status == 'pending'
-            && request.resource.data.personId == resource.data.personId);
+        && request.resource.data.status == 'pending'
+        && validRequestData();
+      // Admins/leads approve, deny or edit anything (but never reassign the
+      // request to another person). Members may edit their own request only
+      // while it stays pending — no self-approval.
+      allow update: if request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['type', 'status', 'startDate', 'endDate', 'note', 'hours'])
+        && validRequestData()
+        && (isAdminOfPerson(resource.data.personId)
+            || (isPerson(resource.data.personId)
+                && resource.data.status == 'pending'
+                && request.resource.data.status == 'pending'));
       // Members may withdraw their own requests (also used when leaving a team).
       allow delete: if isAdminOfPerson(resource.data.personId)
         || isPerson(resource.data.personId);
@@ -98,12 +162,18 @@ service cloud.firestore {
       allow read: if allowedUser();
       // Every task needs an assignee the creator administers: tasks are fetched
       // per assignee, so an unassigned task would be unreachable by the queries
-      // and by these rules.
-      allow create: if isAdminOfPerson(request.resource.data.assigneeId);
-      // Admin/lead edits anything; the assignee may only change the status field.
-      allow update: if isAdminOfPerson(resource.data.assigneeId)
-        || (isPerson(resource.data.assigneeId)
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']));
+      // and by these rules. New tasks always start out assigned.
+      allow create: if isAdminOfPerson(request.resource.data.assigneeId)
+        && request.resource.data.status == 'assigned'
+        && validTaskData();
+      // Admin/lead edits anything (reassignment only to people they also
+      // administer); the assignee may only change the status field.
+      allow update: if validTaskData()
+        && ((isAdminOfPerson(resource.data.assigneeId)
+              && (request.resource.data.assigneeId == resource.data.assigneeId
+                  || isAdminOfPerson(request.resource.data.assigneeId)))
+            || (isPerson(resource.data.assigneeId)
+                && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])));
       // Assignees may delete their own tasks (also used when leaving a team).
       allow delete: if isAdminOfPerson(resource.data.assigneeId)
         || isPerson(resource.data.assigneeId);

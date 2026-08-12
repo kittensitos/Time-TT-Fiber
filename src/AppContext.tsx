@@ -30,6 +30,7 @@ export function AppProvider({ authUser, children }: { authUser: AuthUser; childr
   const [team, setTeam] = useState<Team | null>(null)
   const [isAdmin, setIsAdmin] = useState(false)
   const [people, setPeople] = useState<Person[]>([])
+  const [visibleIds, setVisibleIds] = useState<string[]>([])
   const [requests, setRequests] = useState<TimeOffRequest[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
   const [loading, setLoading] = useState(true)
@@ -41,8 +42,7 @@ export function AppProvider({ authUser, children }: { authUser: AuthUser; childr
       setTeam(null)
       setIsAdmin(false)
       setPeople([])
-      setRequests([])
-      setTasks([])
+      setVisibleIds([])
       setLoading(false)
       return
     }
@@ -53,18 +53,12 @@ export function AppProvider({ authUser, children }: { authUser: AuthUser; childr
       myTeam?.adminEmail.toLowerCase() === authUser.email.toLowerCase() ||
       (await isListedTeamLead(authUser.email))
     const teamPeople = await backend.getPeople(me.teamId)
-    // Admins see the whole team's data; members only their own (as in the reference app).
-    const visibleIds = admin ? teamPeople.map((p) => p.id) : [me.id]
-    const [reqs, tsks] = await Promise.all([
-      backend.getRequestsForPeople(visibleIds),
-      backend.getTasksForPeople(visibleIds),
-    ])
     setPerson(me)
     setTeam(myTeam)
     setIsAdmin(admin)
     setPeople(teamPeople)
-    setRequests(reqs.sort((a, b) => (a.startDate < b.startDate ? 1 : -1)))
-    setTasks(tsks)
+    // Admins see the whole team's data; members only their own (as in the reference app).
+    setVisibleIds(admin ? teamPeople.map((p) => p.id) : [me.id])
     setLoading(false)
   }, [authUser.email])
 
@@ -72,6 +66,27 @@ export function AppProvider({ authUser, children }: { authUser: AuthUser; childr
     setLoading(true)
     void refresh()
   }, [refresh])
+
+  // Requests and tasks stream in over live listeners: a mutation is a single
+  // write, and Firestore pushes the change to every open session — which is
+  // also what makes the notification bell pop without a reload.
+  const visibleKey = visibleIds.join(',')
+  useEffect(() => {
+    const ids = visibleKey ? visibleKey.split(',') : []
+    if (ids.length === 0) {
+      setRequests([])
+      setTasks([])
+      return
+    }
+    const unsubRequests = backend.subscribeRequestsForPeople(ids, (reqs) =>
+      setRequests([...reqs].sort((a, b) => (a.startDate < b.startDate ? 1 : -1))),
+    )
+    const unsubTasks = backend.subscribeTasksForPeople(ids, setTasks)
+    return () => {
+      unsubRequests()
+      unsubTasks()
+    }
+  }, [visibleKey])
 
   const personName = useCallback(
     (personId: string) => people.find((p) => p.id === personId)?.name ?? 'Unassigned',
