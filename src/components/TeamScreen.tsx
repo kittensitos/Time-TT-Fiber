@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useApp } from '../AppContext'
 import { backend } from '../services'
 import { isAuthorizedTeamLead } from '../services/teamLeads'
@@ -9,6 +9,18 @@ export default function TeamScreen() {
   const [joinName, setJoinName] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  // Only allow-listed team leads see the create section; hidden while checking.
+  const [canCreate, setCanCreate] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    void isAuthorizedTeamLead(authUser.email).then((ok) => {
+      if (!cancelled) setCanCreate(ok)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [authUser.email])
 
   async function run(fn: () => Promise<unknown>) {
     setError('')
@@ -26,35 +38,39 @@ export default function TeamScreen() {
   return (
     <div className="overlay-screen">
       <div className="overlay-box">
-        <h1>Join or Create a Team</h1>
+        <h1>{canCreate ? 'Join or Create a Team' : 'Join a Team'}</h1>
         <p className="muted">You need a team to get started</p>
         {error && <div className="form-error">{error}</div>}
 
-        <div className="form-group">
-          <label htmlFor="create-team-name">Create a new team</label>
-          <input
-            id="create-team-name"
-            value={createName}
-            onChange={(e) => setCreateName(e.target.value)}
-            placeholder="e.g. Engineering"
-          />
-        </div>
-        <button
-          className="btn btn-primary block"
-          disabled={busy || !createName.trim()}
-          onClick={() =>
-            void run(async () => {
-              if (!(await isAuthorizedTeamLead(authUser.email))) {
-                throw new Error('Only authorized team leads can create teams')
+        {canCreate && (
+          <>
+            <div className="form-group">
+              <label htmlFor="create-team-name">Create a new team</label>
+              <input
+                id="create-team-name"
+                value={createName}
+                onChange={(e) => setCreateName(e.target.value)}
+                placeholder="e.g. Engineering"
+              />
+            </div>
+            <button
+              className="btn btn-primary block"
+              disabled={busy || !createName.trim()}
+              onClick={() =>
+                void run(async () => {
+                  if (!(await isAuthorizedTeamLead(authUser.email))) {
+                    throw new Error('Only authorized team leads can create teams')
+                  }
+                  await backend.createTeam(createName.trim(), authUser)
+                })
               }
-              await backend.createTeam(createName.trim(), authUser)
-            })
-          }
-        >
-          Create Team
-        </button>
+            >
+              Create Team
+            </button>
 
-        <div className="divider">or</div>
+            <div className="divider">or</div>
+          </>
+        )}
 
         <div className="form-group">
           <label htmlFor="join-team-name">Join an existing team</label>
