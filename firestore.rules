@@ -1,0 +1,112 @@
+rules_version = '2';
+
+// Access model mirrors the reference Flask app:
+// - Only signed-in accounts on the allowed email domains can access data.
+// - Team admins (team.adminEmail) and allowlisted team leads (SHA-256 hashes,
+//   no plaintext emails in this file) manage people, tasks and request status.
+// - Members create their own requests and update the status of tasks assigned to them.
+// Review and tighten before production use.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null && request.auth.token.email != null;
+    }
+
+    function myEmail() {
+      return request.auth.token.email.lower();
+    }
+
+    // Only these domains may use the app. Keep in sync with VITE_ALLOWED_DOMAINS.
+    function allowedUser() {
+      return signedIn()
+        && myEmail().matches('.*@(telusinternational[.]com|telusdigital[.]com)$');
+    }
+
+    // Team-lead allowlist as SHA-256 hashes of lowercased emails. Keep in sync
+    // with VITE_TEAM_LEAD_HASHES in .env. Leads get admin privileges regardless
+    // of sign-in provider (email/password or Google SSO).
+    function isTeamLead() {
+      return allowedUser() && hashing.sha256(myEmail()).toHexString().lower() in [
+        'b17287bddc5630440d88617549fd75b9204cd66083a5c83bce6048aa49ec47c3'
+      ];
+    }
+
+    function teamAdminEmail(teamId) {
+      return get(/databases/$(database)/documents/teams/$(teamId)).data.adminEmail.lower();
+    }
+
+    function personTeamId(personId) {
+      return get(/databases/$(database)/documents/people/$(personId)).data.teamId;
+    }
+
+    // Admin of the team the given person belongs to, or an allowlisted lead.
+    function isAdminOfPerson(personId) {
+      return allowedUser()
+        && (teamAdminEmail(personTeamId(personId)) == myEmail() || isTeamLead());
+    }
+
+    function isPerson(personId) {
+      return allowedUser()
+        && get(/databases/$(database)/documents/people/$(personId)).data.email.lower() == myEmail();
+    }
+
+    match /teams/{teamId} {
+      allow read: if allowedUser();
+      // Creator becomes the team admin; restricted to allowlisted team leads.
+      allow create: if allowedUser()
+        && request.resource.data.adminEmail.lower() == myEmail()
+        && isTeamLead();
+      allow update, delete: if allowedUser()
+        && (resource.data.adminEmail.lower() == myEmail() || isTeamLead());
+    }
+
+    match /people/{personId} {
+      allow read: if allowedUser();
+      // Self-registration on team create/join, the team admin, or a lead —
+      // and the new member must belong to an allowed domain.
+      allow create: if allowedUser()
+        && request.resource.data.email.lower().matches('.*@(telusinternational[.]com|telusdigital[.]com)$')
+        && (request.resource.data.email.lower() == myEmail()
+            || teamAdminEmail(request.resource.data.teamId) == myEmail()
+            || isTeamLead());
+      allow update, delete: if allowedUser()
+        && (resource.data.email.lower() == myEmail()
+            || teamAdminEmail(resource.data.teamId) == myEmail()
+            || isTeamLead());
+    }
+
+    match /requests/{requestId} {
+      allow read: if allowedUser();
+      // Members file requests for themselves; new requests are always pending.
+      allow create: if allowedUser()
+        && isPerson(request.resource.data.personId)
+        && request.resource.data.status == 'pending';
+      // Admins/leads approve, deny or edit anything. Members may edit their own
+      // request only while it stays pending — no self-approval, no reassigning.
+      allow update: if isAdminOfPerson(resource.data.personId)
+        || (isPerson(resource.data.personId)
+            && resource.data.status == 'pending'
+            && request.resource.data.status == 'pending'
+            && request.resource.data.personId == resource.data.personId);
+      // Members may withdraw their own requests (also used when leaving a team).
+      allow delete: if isAdminOfPerson(resource.data.personId)
+        || isPerson(resource.data.personId);
+    }
+
+    match /tasks/{taskId} {
+      allow read: if allowedUser();
+      // Every task needs an assignee the creator administers: tasks are fetched
+      // per assignee, so an unassigned task would be unreachable by the queries
+      // and by these rules.
+      allow create: if isAdminOfPerson(request.resource.data.assigneeId);
+      // Admin/lead edits anything; the assignee may only change the status field.
+      allow update: if isAdminOfPerson(resource.data.assigneeId)
+        || (isPerson(resource.data.assigneeId)
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']));
+      // Assignees may delete their own tasks (also used when leaving a team).
+      allow delete: if isAdminOfPerson(resource.data.assigneeId)
+        || isPerson(resource.data.assigneeId);
+    }
+  }
+}
