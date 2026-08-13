@@ -6,6 +6,12 @@ import { businessDays, capitalize, formatDate, typeLabel } from '../utils'
 import type { RequestStatus, RequestType, TimeOffRequest } from '../types'
 import Modal from './Modal'
 
+// Members can hold at most this many requests at once; deleting an old one
+// frees a slot. Admins are exempt.
+const MAX_REQUESTS_PER_MEMBER = 3
+// Scheduling starts in 2026 — matches the calendar's floor.
+const MIN_REQUEST_DATE = '2026-01-01'
+
 export default function RequestsTab() {
   const { person, isAdmin, people, requests, personName } = useApp()
 
@@ -30,6 +36,14 @@ export default function RequestsTab() {
     if (!person) return
     if (!startDate || !endDate || endDate < startDate) {
       setFormError('Invalid date range.')
+      return
+    }
+    if (startDate < MIN_REQUEST_DATE) {
+      setFormError('Requests must be for dates in 2026 or later.')
+      return
+    }
+    if (!isAdmin && requests.filter((r) => r.personId === person.id).length >= MAX_REQUESTS_PER_MEMBER) {
+      setFormError(`You can only have ${MAX_REQUESTS_PER_MEMBER} requests at a time. Delete one of your existing requests to submit a new one.`)
       return
     }
     const h = type === 'powerhour' ? parseInt(hours, 10) || 0 : 0
@@ -85,6 +99,12 @@ export default function RequestsTab() {
     <>
       <div className="card glow-card">
         <h2>Submit Time Off Request</h2>
+        {!isAdmin && person && (
+          <p className="muted small">
+            {requests.filter((r) => r.personId === person.id).length} of {MAX_REQUESTS_PER_MEMBER} request
+            slots used — delete an old request to free one up.
+          </p>
+        )}
         <form onSubmit={submit}>
           {formError && <div className="form-error">{formError}</div>}
           <div className="form-row">
@@ -105,11 +125,11 @@ export default function RequestsTab() {
           <div className="form-row">
             <div className="form-group">
               <label htmlFor="req-start">Start Date</label>
-              <input id="req-start" type="date" required value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+              <input id="req-start" type="date" required min={MIN_REQUEST_DATE} value={startDate} onChange={(e) => setStartDate(e.target.value)} />
             </div>
             <div className="form-group">
               <label htmlFor="req-end">End Date</label>
-              <input id="req-end" type="date" required value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+              <input id="req-end" type="date" required min={MIN_REQUEST_DATE} value={endDate} onChange={(e) => setEndDate(e.target.value)} />
             </div>
           </div>
           <div className="form-group">
@@ -154,7 +174,7 @@ export default function RequestsTab() {
                   <th>Days</th>
                   <th>Status</th>
                   <th>Note</th>
-                  {isAdmin && <th>Actions</th>}
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -170,18 +190,26 @@ export default function RequestsTab() {
                     <td>{businessDays(r.startDate, r.endDate)}</td>
                     <td><span className={`badge badge-${r.status}`}>{capitalize(r.status)}</span></td>
                     <td>{r.note || '—'}</td>
-                    {isAdmin && (
-                      <td className="actions">
-                        {r.status === 'pending' && (
-                          <>
-                            <button className="btn btn-success btn-sm" onClick={() => void setStatus(r.id, 'approved')}>Approve</button>
-                            <button className="btn btn-danger btn-sm" onClick={() => void setStatus(r.id, 'denied')}>Deny</button>
-                          </>
-                        )}
-                        <button className="btn btn-outline btn-sm" onClick={() => setEditing(r)}>Edit</button>
-                        <button className="btn btn-danger btn-sm" onClick={() => void remove(r.id)}>Del</button>
-                      </td>
-                    )}
+                    <td className="actions">
+                      {isAdmin ? (
+                        <>
+                          {r.status === 'pending' && (
+                            <>
+                              <button className="btn btn-success btn-sm" onClick={() => void setStatus(r.id, 'approved')}>Approve</button>
+                              <button className="btn btn-danger btn-sm" onClick={() => void setStatus(r.id, 'denied')}>Deny</button>
+                            </>
+                          )}
+                          <button className="btn btn-outline btn-sm" onClick={() => setEditing(r)}>Edit</button>
+                          <button className="btn btn-danger btn-sm" onClick={() => void remove(r.id)}>Del</button>
+                        </>
+                      ) : (
+                        // Members may withdraw their own requests (the Firestore
+                        // rules already permit this) — freeing up a request slot.
+                        r.personId === person?.id && (
+                          <button className="btn btn-danger btn-sm" onClick={() => void remove(r.id)}>Del</button>
+                        )
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>

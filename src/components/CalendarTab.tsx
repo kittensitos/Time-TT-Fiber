@@ -5,10 +5,17 @@ import type { Task, TimeOffRequest } from '../types'
 
 type CalView = 'month' | 'week' | 'day'
 
+// Scheduling starts in 2026 — the calendar never navigates earlier.
+const MIN_DATE = new Date(2026, 0, 1)
+
+function clampToMin(d: Date): Date {
+  return d < MIN_DATE ? new Date(MIN_DATE) : d
+}
+
 export default function CalendarTab() {
   const { requests, tasks, personName } = useApp()
   const [view, setView] = useState<CalView>('month')
-  const [date, setDate] = useState(() => new Date())
+  const [date, setDate] = useState(() => clampToMin(new Date()))
 
   const todayStr = toDateStr(new Date())
 
@@ -20,17 +27,23 @@ export default function CalendarTab() {
     return tasks.filter((t) => t.dueDate === dateStr && t.status !== 'completed')
   }
 
-  function nav(dir: -1 | 1) {
+  function shifted(dir: -1 | 1): Date {
     const d = new Date(date)
     if (view === 'month') d.setMonth(d.getMonth() + dir)
     else if (view === 'week') d.setDate(d.getDate() + dir * 7)
     else d.setDate(d.getDate() + dir)
-    setDate(d)
+    return d
   }
+
+  function nav(dir: -1 | 1) {
+    setDate(clampToMin(shifted(dir)))
+  }
+
+  const prevDisabled = shifted(-1) < MIN_DATE
 
   function openDay(dateStr: string) {
     const [y, m, dd] = dateStr.split('-').map(Number)
-    setDate(new Date(y, m - 1, dd))
+    setDate(clampToMin(new Date(y, m - 1, dd)))
     setView('day')
   }
 
@@ -54,8 +67,8 @@ export default function CalendarTab() {
     <div className="card glow-card">
       <div className="cal-toolbar">
         <div className="cal-nav">
-          <button className="btn btn-outline btn-sm" onClick={() => nav(-1)}>‹</button>
-          <button className="btn btn-outline btn-sm" onClick={() => setDate(new Date())}>Today</button>
+          <button className="btn btn-outline btn-sm" disabled={prevDisabled} onClick={() => nav(-1)}>‹</button>
+          <button className="btn btn-outline btn-sm" onClick={() => setDate(clampToMin(new Date()))}>Today</button>
           <button className="btn btn-outline btn-sm" onClick={() => nav(1)}>›</button>
           <h3 className="cal-title">{title}</h3>
         </div>

@@ -46,13 +46,17 @@ export function AppProvider({ authUser, children }: { authUser: AuthUser; childr
       setLoading(false)
       return
     }
-    const myTeam = await backend.getTeam(me.teamId)
+    // These only depend on me.teamId, so fetch them in parallel instead of
+    // as a request waterfall.
+    const [myTeam, teamPeople, listedLead] = await Promise.all([
+      backend.getTeam(me.teamId),
+      backend.getPeople(me.teamId),
+      isListedTeamLead(authUser.email),
+    ])
     // Admin = the team's owner, or an allowlisted team lead (hashed env var) —
     // recognized regardless of sign-in provider, including Google SSO.
     const admin =
-      myTeam?.adminEmail.toLowerCase() === authUser.email.toLowerCase() ||
-      (await isListedTeamLead(authUser.email))
-    const teamPeople = await backend.getPeople(me.teamId)
+      myTeam?.adminEmail.toLowerCase() === authUser.email.toLowerCase() || listedLead
     setPerson(me)
     setTeam(myTeam)
     setIsAdmin(admin)
